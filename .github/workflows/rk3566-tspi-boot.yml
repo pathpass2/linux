@@ -7,8 +7,7 @@ on:
 
 env:
   ARCH: arm64
-  TOOLCHAIN_VERSION: 14.2.rel1
-  TOOLCHAIN_TAR: arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
+
 
 jobs:
   build:
@@ -46,7 +45,7 @@ jobs:
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=./modules
 
-          cd ./modules/lib/modules/ &&  tar -zcvf $kernel_main_version.tar.gz   $kernel_main_version
+          cd ./modules/lib/modules/ &&  tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ${{ env.kernel_main_version }}
       
 
       - name: Upload Kernel to Release
@@ -56,4 +55,4 @@ jobs:
           files: |
             ./rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
             ./modules/lib/modules/${{ env.kernel_main_version }}.tar.gz
-          body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.KERNEL_VERSION }}"
+          body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
