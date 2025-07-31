@@ -26,9 +26,9 @@ jobs:
           find . -type f -name "mkimg" -exec chmod +x {} \;
           find . -type f -name "resource_tool" -exec chmod +x {} \;
           find . -type f -name "mkbootimg" -exec chmod +x {} \;
-          chmod +x ./scripts/mkimg
-          chmod +x ./scripts/resource_tool
-          chmod +x ./scripts/mkbootimg
+          chmod +x ./scripts/*
+          
+      
 
       - name: Install Latest LZ4
         run: |
