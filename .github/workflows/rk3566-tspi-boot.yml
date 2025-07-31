@@ -74,10 +74,10 @@ jobs:
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=./modules
 
       - name: tar Kernel-modules
-          working-directory: modules/lib/modules
-          run: |
-            # 打包模块
-            tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ${{ env.kernel_main_version }}
+        working-directory: modules/lib/modules
+        run: |
+          # 打包模块
+          tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ${{ env.kernel_main_version }}
 
       - name: Build Kernel-headers
         run: |
