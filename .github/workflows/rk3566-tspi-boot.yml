@@ -29,6 +29,19 @@ jobs:
           chmod +x ./scripts/mkimg
           chmod +x ./scripts/resource_tool
           chmod +x ./scripts/mkbootimg
+
+      - name: Install Latest LZ4
+        run: |
+          # 从 GitHub 下载最新版 LZ4
+          LZ4_LATEST=$(curl -s https://api.github.com/repos/lz4/lz4/releases/latest | grep 'tarball_url' | cut -d\" -f4)
+          wget $LZ4_LATEST -O lz4-latest.tar.gz
+          tar -xzf lz4-latest.tar.gz
+          cd lz4-lz4-*
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          lz4 --version
+
           
       - name: Install Dependencies
         run: |
