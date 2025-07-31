@@ -52,7 +52,9 @@ jobs:
             libssl-dev \
             bc \
             flex \
-            bison
+            bison \
+            libncurses-dev
+          sudo -E apt-get -y install $(curl -fsSL https://tinyurl.com/ubuntu2204-build-armbian)
 
       - name: Setup ARM Toolchain
         run: |
@@ -65,7 +67,7 @@ jobs:
         run: |
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
-          
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  tspi-defconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
 
