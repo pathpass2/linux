@@ -97,7 +97,7 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: |
             ./rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-            ./modules/lib/modules/${{ env.kernel_main_version }}.tar.gz
+            ./${{ env.kernel_main_version }}.tar.gz
             ./linux-headers-${{ env.kernel_main_version }}.tar.gz
           body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
           draft: false
