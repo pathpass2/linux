@@ -66,6 +66,18 @@ jobs:
 
       - name: Build Kernel
         run: |
+          # 添加调试信息
+          echo "当前工作目录: $(pwd)"
+          echo "目录内容:"
+          ls -la
+          
+          # 验证配置文件存在
+          if [ ! -f "arch/$ARCH/configs/tspi-defconfig" ]; then
+            echo "::error::tspi-defconfig 不存在!"
+            ls arch/$ARCH/configs/
+            exit 1
+          fi
+          
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  tspi-defconfig
