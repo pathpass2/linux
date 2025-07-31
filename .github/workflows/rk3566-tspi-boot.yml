@@ -62,12 +62,13 @@ jobs:
           tar xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
           echo "$(pwd)/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
 
+
+
       - name: Build Kernel
-        working-directory: ./
         run: |
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
-          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  menuconfig
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  tspi-defconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
 
@@ -78,7 +79,6 @@ jobs:
           cd ./modules/lib/modules/ &&  tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ${{ env.kernel_main_version }}
 
       - name: Build Kernel-headers
-        working-directory: ./
         run: |
           # 制作linux-headers头文件
           mkdir  linux-headers-${{ env.kernel_main_version }}
