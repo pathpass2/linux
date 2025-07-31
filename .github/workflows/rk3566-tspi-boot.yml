@@ -64,7 +64,7 @@ jobs:
 
 
 
-      - name: tar Kernel
+      - name: Build Kernel
         run: |        
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
@@ -73,7 +73,7 @@ jobs:
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=./modules
 
-      - name: Build Kernel 
+      - name: tar Kernel-modules
           working-directory: modules/lib/modules
           run: |
             # 打包模块
