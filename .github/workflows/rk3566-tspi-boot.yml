@@ -16,7 +16,7 @@ on:
       kernel_version:
         description: "Select kernel version"
         required: false
-        default: "5.4.y"
+        default: "latest"
         type: choice
         options:
           - latest
@@ -66,10 +66,10 @@ on:
       kernel_sign:
         description: "Set the kernel custom signature"
         required: false
-        default: "-ophub"
+        default: ""
         type: choice
         options:
-          - -ophub
+          - pathpass2
           - -yourname
 
 env:
@@ -131,12 +131,12 @@ jobs:
         run: |
           df -hT ${PWD}
           mkdir -p /builder/{kernel,output}
-          ln -sf /builder/kernel /home/runner/work/_actions/ophub/amlogic-s9xxx-armbian/main/compile-kernel/kernel
-          ln -sf /builder/output /home/runner/work/_actions/ophub/amlogic-s9xxx-armbian/main/compile-kernel/output
+          ln -sf /builder/kernel /home/runner/work/_actions/pathpass2/linux/main/compile-kernel/kernel
+          ln -sf /builder/output /home/runner/work/_actions/pathpass2/linux/main/compile-kernel/output
           echo "status=success" >> ${GITHUB_OUTPUT}
 
       - name: Compile the kernel [ ${{ inputs.kernel_version }} ]
-        uses: ophub/amlogic-s9xxx-armbian@main
+        uses: pathpass2/linux@main
         if: ${{ steps.mapped.outputs.status }} == 'success' && !cancelled()
         with:
           build_target: kernel
@@ -151,10 +151,10 @@ jobs:
           silent_log: ${{ inputs.silent_log }}
 
       - name: Upload Kernel to Release
-        uses: ncipollo/release-action@main
+        uses: pathpass2/release-action@main
         if: ${{ env.PACKAGED_STATUS }} == 'success' && !cancelled()
         with:
-          tag: kernel_stable
+          tag: kernel_main
           artifacts: ${{ env.PACKAGED_OUTPUTPATH }}/*
           allowUpdates: true
           removeArtifacts: false
