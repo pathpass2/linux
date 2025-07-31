@@ -73,7 +73,9 @@ jobs:
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=./modules
           # 打包模块
-          tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ./modules/lib/modules/${{ env.kernel_main_version }}
+          mv  ./modules/lib/modules/${{ env.kernel_main_version }}    ./${{ env.kernel_main_version }}
+          rm  -rf  modules
+          tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ${{ env.kernel_main_version }}
 
       - name: Build Kernel-headers
         run: |
@@ -94,7 +96,7 @@ jobs:
       - name: Upload Kernel to Release
         uses: ncipollo/release-action@main
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.kernel_main_version }}
           files: |
             ./rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
             ./${{ env.kernel_main_version }}.tar.gz
