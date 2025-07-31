@@ -64,7 +64,7 @@ jobs:
 
 
 
-      - name: Build Kernel
+      - name: tar Kernel
         run: |        
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
