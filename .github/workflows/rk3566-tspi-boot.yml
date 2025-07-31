@@ -67,7 +67,7 @@ jobs:
         run: |
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
-          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  arch/arm64/configs/tspi-defconfig
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  menuconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
 
