@@ -53,7 +53,10 @@ jobs:
             bc \
             flex \
             bison \
-            libncurses-dev
+            libncurses-dev \
+            apt-get install -y \
+            initramfs-tools \
+            busybox-static
           sudo -E apt-get -y install $(curl -fsSL https://tinyurl.com/ubuntu2204-build-armbian)
 
       - name: Setup ARM Toolchain
