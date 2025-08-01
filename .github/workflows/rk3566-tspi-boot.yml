@@ -71,11 +71,14 @@ jobs:
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  olddefconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
+          ls -l boot.img
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-          ls  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
+          ls  -l rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=./modules
           # 打包模块
-          tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ./modules/lib/modules/${{ env.kernel_main_version }}
+          cd  /home/runner/work/linux/linux/modules/lib/modules
+          echo "$(pwd)"
+          tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ${{ env.kernel_main_version }}
           ls  ${{ env.kernel_main_version }}.tar.gz
       - name: Build Kernel-headers
         run: |
@@ -91,7 +94,8 @@ jobs:
           cp -a include                  linux-headers-${{ env.kernel_main_version }}/
           cp -a .config                 linux-headers-${{ env.kernel_main_version }}/
           tar -zcvf  linux-headers-${{ env.kernel_main_version }}.tar.gz   linux-headers-${{ env.kernel_main_version }}
-
+          echo "$(pwd)"
+          ls  -l linux-headers-${{ env.kernel_main_version }}.tar.gz
           
       - name: Upload Kernel to Release
         uses: ncipollo/release-action@v1
@@ -100,8 +104,8 @@ jobs:
           name: "Kernel ${{ env.kernel_main_version }}"
           
           artifacts: |
-            rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-            ${{ env.kernel_main_version }}.tar.gz
+            /home/runner/work/linux/linux/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
+            /home/runner/work/linux/linux/modules/lib/modules/${{ env.kernel_main_version }}.tar.gz
             linux-headers-${{ env.kernel_main_version }}.tar.gz
           body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
           draft: false
