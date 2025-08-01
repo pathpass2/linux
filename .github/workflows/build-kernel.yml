@@ -28,10 +28,10 @@ jobs:
 
       - name: Build Kernel
         run: |
-          echo "$(pwd)"
-          echo "${{ env.src_path }}"
+          echo "查看当前路径$(pwd)"
+          echo "查看源码路径${{ env.src_path }}"
           echo "modules_path=${{ env.src_path }}/modules/lib/modules" >> $GITHUB_ENV
-          echo "${{ env.modules_path }}"
+          echo "查看模块路径${{ env.modules_path }}"
           
 
          
