@@ -68,17 +68,18 @@ jobs:
           tar xf arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz
           echo "$(pwd)/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin" >> $GITHUB_PATH
 
-
-
-      - name: Build Kernel
+      - name: Get Kernel Version
         run: |
-          echo "查看当前路径$(pwd)"
-          echo "查看源码路径${{ env.src_path }}"
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
+      - name: set armbian-boot-directory
+        run: |
+          echo "armbian_boot_path=${{ env.src_path }}/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}" >> $GITHUB_ENV
+
+      - name: Build Kernel
+        run: |             
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  olddefconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
-
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=${{ env.src_path }}/modules
           echo  "查看编译好的boot.img"
           ls -l boot.img
@@ -118,10 +119,10 @@ jobs:
           echo "当前所在路径：$(pwd)"
           echo "查看打包的linux-headers-${{ env.kernel_main_version }}.tar.gz"
           ls  -l ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
-      
+     
+
       - name: Package Armbian Boot
         run: |
-          echo "armbian_boot_path=/home/runner/work/linux/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}" >> $GITHUB_ENV
           mkdir -p  ${{ env.armbian_boot_path }}
           cp -a System.map  ${{ env.armbian_boot_path }}/
           cp -a .config  ${{ env.armbian_boot_path }}/
