@@ -71,10 +71,13 @@ jobs:
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  olddefconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
-          ls -l boot.img
-          mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-          ls  -l rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
+
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=./modules
+          echo  "查看编译好的boot.img"
+          ls -l boot.img
+          echo "重命名boot.img为rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img"
+          mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
+          ls  -l rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img          
           echo "当前所在编译路径：$(pwd)"
           # 打包模块
           cd  /home/runner/work/linux/linux/modules/lib/modules
@@ -82,10 +85,13 @@ jobs:
 
           echo  "查看modules"
           ls -l
+          ls -l ${{ env.kernel_main_version }}
           echo "打包modules"
-          tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ${{ env.kernel_main_version }}
+          tar -zcvf ${{ env.kernel_main_version }}-modules.tar.gz   ${{ env.kernel_main_version }}
           echo "查看打包的modules.tar.gz"
           ls  -l
+     
+      
       - name: Build Kernel-headers
         run: |
           # 制作linux-headers头文件
@@ -103,6 +109,25 @@ jobs:
           echo "当前所在路径：$(pwd)"
           echo "查看打包的headers.tar.gz"
           ls  -l linux-headers-${{ env.kernel_main_version }}.tar.gz
+      
+      - name: Package Armbian Boot
+        run: |
+          mkdir -p  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
+          cp -a System.map  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/
+          cp -a .config  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/
+          cp -a /home/runner/work/linux/linux/arch/arm64/boot/Image  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/vmlinuz
+          cp -a /home/runner/work/linux/linux/arch/arm64/boot/dts/rockchip/rk3566-lckfb-tspi.dtb  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/
+          mkinitramfs -o rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/initrd.img   -k  ${{ env.kernel_main_version }} /home/runner/work/linux/linux/modules/lib/modules/${{ env.kernel_main_version }}
+          mkimage -A arm64 -O linux -T ramdisk -C none -a 0 -e 0  -n "uInitrd ${{ env.kernel_main_version }}"  -d  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/initrd.img  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/uInitrd
+          
+          
+          echo  "查看rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}下的文件"
+          ls -l  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
+          cd  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
+          echo "打包rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz"
+          tar -zcvf rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz  *
+          mv  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz  /home/runner/work/linux/linux/
+          
           
       - name: Upload Kernel to Release
         uses: ncipollo/release-action@v1
@@ -112,8 +137,9 @@ jobs:
           
           artifacts: |
             /home/runner/work/linux/linux/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-            /home/runner/work/linux/linux/modules/lib/modules/${{ env.kernel_main_version }}.tar.gz
+            /home/runner/work/linux/linux/modules/lib/modules/${{ env.kernel_main_version }}-modules.tar.gz
             linux-headers-${{ env.kernel_main_version }}.tar.gz
+            /home/runner/work/linux/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
           body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
           draft: false
           prerelease: false
