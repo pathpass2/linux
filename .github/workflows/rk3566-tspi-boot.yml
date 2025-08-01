@@ -8,8 +8,8 @@ on:
 env:
   ARCH: arm64
   src_path: /home/runner/work/linux/linux
-  modules_path: ${{src_path}}/modules/lib/modules
-  armbian_boot_path: ${{src_path}}/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
+  modules_path: /home/runner/work/linux/linux/modules/lib/modules
+  armbian_boot_path: /home/runner/work/linux/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
   
 
 jobs:
@@ -119,6 +119,7 @@ jobs:
       
       - name: Package Armbian Boot
         run: |
+          echo "armbian_boot_path=/home/runner/work/linux/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}" >> $GITHUB_ENV
           mkdir -p  ${{armbian_boot_path}}
           cp -a System.map  ${{armbian_boot_path}}/
           cp -a .config  ${{armbian_boot_path}}/
