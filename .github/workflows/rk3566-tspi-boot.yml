@@ -8,6 +8,7 @@ on:
 env:
   ARCH: arm64
   src_path: /home/runner/work/linux/linux
+  modules_path: /home/runner/work/linux/linux/modules/lib/modules
   
 
   
@@ -71,12 +72,10 @@ jobs:
 
       - name: Build Kernel
         run: |
-          echo "$(pwd)"
-          echo "${{ env.src_path }}"
+          echo "查看当前路径$(pwd)"
+          echo "查看源码路径${{ env.src_path }}"
           # 获取内核版本号
-          # echo "src_path=/home/runner/work/linux/linux" >> $GITHUB_ENV
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
-          echo "modules_path=${{ env.src_path }}/modules/lib/modules" >> $GITHUB_ENV
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  olddefconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
 
@@ -85,14 +84,15 @@ jobs:
           ls -l boot.img
           echo "重命名boot.img为rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img"
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-          ls  -l rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img          
+          ls  -l ${{ env.src_path }}/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img          
           echo "当前所在编译路径：$(pwd)"
           # 打包模块
           cd  ${{ env.modules_path }}
-          echo "进入modules路径：$(pwd)"
+          echo "进入modules路径：${{ env.modules_path }}"
 
           echo  "查看modules"
           ls -l
+          echo "查看模块详情"
           ls -l ${{ env.kernel_main_version }}
           echo "打包modules"
           tar -zcvf ${{ env.kernel_main_version }}-modules.tar.gz   ${{ env.kernel_main_version }}
@@ -116,7 +116,7 @@ jobs:
           cd ${{ env.src_path }}
           tar -zcvf  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz   linux-headers-${{ env.kernel_main_version }}
           echo "当前所在路径：$(pwd)"
-          echo "查看打包的headers.tar.gz"
+          echo "查看打包的linux-headers-${{ env.kernel_main_version }}.tar.gz"
           ls  -l ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
       
       - name: Package Armbian Boot
