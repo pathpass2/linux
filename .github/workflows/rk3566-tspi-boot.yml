@@ -94,9 +94,10 @@ jobs:
 
           
       - name: Upload Kernel to Release
-        uses: ncipollo/release-action@main
+        uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.kernel_main_version }}
+          tag_name: v${{ env.kernel_main_version }}
+          name: "Kernel ${{ env.kernel_main_version }}"
           files: |
             ./rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
             ./${{ env.kernel_main_version }}.tar.gz
