@@ -150,7 +150,7 @@ jobs:
             ${{ env.src_path }}/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
             ${{ env.modules_path }}/${{ env.kernel_main_version }}-modules.tar.gz
             ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
-            ${{ env.armbian_boot_path }}/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
+            ${{ env.armbian_boot_path }}/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
           body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
           draft: false
           prerelease: false
