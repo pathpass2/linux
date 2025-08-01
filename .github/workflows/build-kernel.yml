@@ -1,0 +1,46 @@
+name: Build rk3566-tspi.img
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  ARCH: arm64
+  src_path: /home/runner/work/linux/linux
+ 
+  
+
+  
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # 关键：保留文件权限
+          persist-credentials: false
+
+      
+
+      - name: Build Kernel
+        run: |
+          echo "$(pwd)"
+          echo "${{ env.src_path }}"
+          echo "modules_path=${{ env.src_path }}/modules/lib/modules" >> $GITHUB_ENV
+          echo "${{ env.modules_path }}"
+          
+
+         
+
+         
+        
+
+     
+      
+
+          
+          
