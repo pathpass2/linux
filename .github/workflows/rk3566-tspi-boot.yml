@@ -127,7 +127,7 @@ jobs:
         run: |
           mkdir -p  ${{ env.armbian_boot_path }}
           cp -a System.map  ${{ env.armbian_boot_path }}/
-          cp -a .config  ${{ env.armbian_boot_path }}/
+          cp -a .config  ${{ env.armbian_boot_path }}/config-${{ env.kernel_main_version }}
           cp -a ${{ env.src_path }}/arch/arm64/boot/Image  ${{ env.armbian_boot_path }}/vmlinuz
           cp -a ${{ env.src_path }}/arch/arm64/boot/dts/rockchip/rk3566-lckfb-tspi.dtb  ${{ env.armbian_boot_path }}/
           mkinitramfs -o ${{ env.armbian_boot_path }}/initrd.img   -k  ${{ env.kernel_main_version }} ${{ env.modules_path }}/${{ env.kernel_main_version }}
