@@ -8,6 +8,7 @@ on:
 env:
   ARCH: arm64
   src_path: /home/runner/work/linux/linux
+  modules_path: /home/runner/work/linux/linux/modules/lib/modules
  
   
 
@@ -30,7 +31,6 @@ jobs:
         run: |
           echo "p查看当前路径$(pwd)"
           echo "y查看源码路径${{ env.src_path }}"
-          echo "modules_path=${{ env.src_path }}/modules/lib/modules" >> $GITHUB_ENV
           echo "m查看模块路径${{ env.modules_path }}"
           
 
