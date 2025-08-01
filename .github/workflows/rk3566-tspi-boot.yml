@@ -7,6 +7,7 @@ on:
 
 env:
   ARCH: arm64
+  src_path: /home/runner/work/linux/linux
   
 
   
@@ -71,8 +72,9 @@ jobs:
       - name: Build Kernel
         run: |
           echo "$(pwd)"
+          echo "${{ env.src_path }}"
           # 获取内核版本号
-          echo "src_path=/home/runner/work/linux/linux" >> $GITHUB_ENV
+          # echo "src_path=/home/runner/work/linux/linux" >> $GITHUB_ENV
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
           echo "modules_path=${{ env.src_path }}/modules/lib/modules" >> $GITHUB_ENV
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  olddefconfig
