@@ -116,10 +116,10 @@ scm_version()
 
 		# If only the short version is requested, don't bother
 		# running further git commands
-		if $short; then
+	#	if $short; then
 	#		echo "+"
-			return
-		fi
+	#		return
+	#	fi
 
 		# If we are past the tagged commit, we pretty print it.
 		# (like 6.1.0-14595-g292a089d78d3)
@@ -198,7 +198,7 @@ config_localversion=$(sed -n 's/^CONFIG_LOCALVERSION=\(.*\)$/\1/p' include/confi
 if grep -q "^CONFIG_LOCALVERSION_AUTO=y$" include/config/auto.conf; then
 	# full scm version string
 	scm_version="$(scm_version)"
-elif [ "${LOCALVERSION+set}" != "set" ]; then
+#elif [ "${LOCALVERSION+set}" != "set" ]; then
 	# If the variable LOCALVERSION is not set, append a plus
 	# sign if the repository is not in a clean annotated or
 	# signed tagged state (as git describe only looks at signed
