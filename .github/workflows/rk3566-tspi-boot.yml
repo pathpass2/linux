@@ -94,14 +94,15 @@ jobs:
 
           
       - name: Upload Kernel to Release
-        uses: softprops/action-gh-release@v1
+        uses: ncipollo/release-action@v1
         with:
-          tag_name: v${{ env.kernel_main_version }}
+          tag: ${{ github.ref_name || format('v{0}', env.kernel_main_version) }}
           name: "Kernel ${{ env.kernel_main_version }}"
-          files: |
-            ./rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-            ./${{ env.kernel_main_version }}.tar.gz
-            ./linux-headers-${{ env.kernel_main_version }}.tar.gz
+          
+          artifacts: |
+            rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
+            ${{ env.kernel_main_version }}.tar.gz
+            linux-headers-${{ env.kernel_main_version }}.tar.gz
           body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
           draft: false
           prerelease: false
