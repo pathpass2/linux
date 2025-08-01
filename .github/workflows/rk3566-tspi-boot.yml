@@ -75,11 +75,17 @@ jobs:
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
           ls  -l rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=./modules
+          echo "当前所在编译路径：$(pwd)"
           # 打包模块
           cd  /home/runner/work/linux/linux/modules/lib/modules
-          echo "$(pwd)"
+          echo "进入modules路径：$(pwd)"
+
+          echo  "查看modules"
+          ls -l
+          echo "打包modules"
           tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ${{ env.kernel_main_version }}
-          ls  ${{ env.kernel_main_version }}.tar.gz
+          echo "查看打包的modules.tar.gz"
+          ls  -l
       - name: Build Kernel-headers
         run: |
           # 制作linux-headers头文件
@@ -94,7 +100,8 @@ jobs:
           cp -a include                  linux-headers-${{ env.kernel_main_version }}/
           cp -a .config                 linux-headers-${{ env.kernel_main_version }}/
           tar -zcvf  linux-headers-${{ env.kernel_main_version }}.tar.gz   linux-headers-${{ env.kernel_main_version }}
-          echo "$(pwd)"
+          echo "当前所在路径：$(pwd)"
+          echo "查看打包的headers.tar.gz"
           ls  -l linux-headers-${{ env.kernel_main_version }}.tar.gz
           
       - name: Upload Kernel to Release
