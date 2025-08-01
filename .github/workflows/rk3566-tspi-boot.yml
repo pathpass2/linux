@@ -65,16 +65,18 @@ jobs:
 
 
       - name: Build Kernel
-        run: |        
+        run: |   
+          echo "$(pwd)"
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  olddefconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
+          ls  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=./modules
           # 打包模块
           tar -zcvf ${{ env.kernel_main_version }}.tar.gz   ./modules/lib/modules/${{ env.kernel_main_version }}
-
+          ls  ${{ env.kernel_main_version }}.tar.gz
       - name: Build Kernel-headers
         run: |
           # 制作linux-headers头文件
