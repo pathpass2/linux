@@ -8,8 +8,7 @@ on:
 env:
   ARCH: arm64
   src_path: /home/runner/work/linux/linux
-  modules_path: /home/runner/work/linux/linux/modules/lib/modules
-  armbian_boot_path: /home/runner/work/linux/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
+
   
 
 jobs:
@@ -75,10 +74,11 @@ jobs:
           echo "$(pwd)"
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
+          echo "modules_path=${{ env.src_path }}/modules/lib/modules" >> $GITHUB_ENV
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  olddefconfig
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
 
-          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=${{src_path}}/modules
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=${{ env.src_path }}/modules
           echo  "查看编译好的boot.img"
           ls -l boot.img
           echo "重命名boot.img为rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img"
@@ -86,7 +86,7 @@ jobs:
           ls  -l rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img          
           echo "当前所在编译路径：$(pwd)"
           # 打包模块
-          cd  ${{modules_path}}
+          cd  ${{ env.modules_path }}
           echo "进入modules路径：$(pwd)"
 
           echo  "查看modules"
@@ -101,35 +101,35 @@ jobs:
       - name: Build Kernel-headers
         run: |
           # 制作linux-headers头文件
-          mkdir  ${{src_path}}/linux-headers-${{ env.kernel_main_version }}
-          cp -a  Module.symvers      ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/
-          cp -a  Makefile           ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/
-          cp -a  scripts            ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/
-          mkdir -p           ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/arch/arm64
-          cp -a arch/arm64/include    ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/include
-          cp -a arch/arm64/kvm          ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/kvm 
-          cp -a arch/arm64/Makefile      ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/Makefile
-          cp -a include                  ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/
-          cp -a .config                 ${{src_path}}/linux-headers-${{ env.kernel_main_version }}/
-          cd ${{src_path}}
-          tar -zcvf  ${{src_path}}/linux-headers-${{ env.kernel_main_version }}.tar.gz   linux-headers-${{ env.kernel_main_version }}
+          mkdir  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}
+          cp -a  Module.symvers      ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a  Makefile           ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a  scripts            ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          mkdir -p                   ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64
+          cp -a arch/arm64/include    ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/include
+          cp -a arch/arm64/kvm          ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/kvm 
+          cp -a arch/arm64/Makefile      ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/Makefile
+          cp -a include                  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a .config                 ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cd ${{ env.src_path }}
+          tar -zcvf  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz   linux-headers-${{ env.kernel_main_version }}
           echo "当前所在路径：$(pwd)"
           echo "查看打包的headers.tar.gz"
-          ls  -l ${{src_path}}/linux-headers-${{ env.kernel_main_version }}.tar.gz
+          ls  -l ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
       
       - name: Package Armbian Boot
         run: |
           echo "armbian_boot_path=/home/runner/work/linux/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}" >> $GITHUB_ENV
-          mkdir -p  ${{armbian_boot_path}}
-          cp -a System.map  ${{armbian_boot_path}}/
-          cp -a .config  ${{armbian_boot_path}}/
-          cp -a ${{src_path}}/arch/arm64/boot/Image  ${{armbian_boot_path}}/vmlinuz
-          cp -a ${{src_path}}/arch/arm64/boot/dts/rockchip/rk3566-lckfb-tspi.dtb  ${{armbian_boot_path}}/
-          mkinitramfs -o ${{armbian_boot_path}}/initrd.img   -k  ${{ env.kernel_main_version }} ${{modules_path}}/${{ env.kernel_main_version }}
-          mkimage -A arm64 -O linux -T ramdisk -C none -a 0 -e 0  -n "uInitrd ${{ env.kernel_main_version }}"  -d  ${{armbian_boot_path}}/initrd.img  ${{armbian_boot_path}}/uInitrd 
-          echo  "查看${{armbian_boot_path}}下的文件"
-          ls -l  ${{armbian_boot_path}}
-          cd  ${{armbian_boot_path}}
+          mkdir -p  ${{ env.armbian_boot_path }}
+          cp -a System.map  ${{ env.armbian_boot_path }}/
+          cp -a .config  ${{ env.armbian_boot_path }}/
+          cp -a ${{ env.src_path }}/arch/arm64/boot/Image  ${{ env.armbian_boot_path }}/vmlinuz
+          cp -a ${{ env.src_path }}/arch/arm64/boot/dts/rockchip/rk3566-lckfb-tspi.dtb  ${{ env.armbian_boot_path }}/
+          mkinitramfs -o ${{ env.armbian_boot_path }}/initrd.img   -k  ${{ env.kernel_main_version }} ${{ env.modules_path }}/${{ env.kernel_main_version }}
+          mkimage -A arm64 -O linux -T ramdisk -C none -a 0 -e 0  -n "uInitrd ${{ env.kernel_main_version }}"  -d  ${{ env.armbian_boot_path }}/initrd.img  ${{ env.armbian_boot_path }}/uInitrd 
+          echo  "查看${{ env.armbian_boot_path }}下的文件"
+          ls -l  ${{ env.armbian_boot_path }}
+          cd  ${{ env.armbian_boot_path }}
           echo "打包rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz"
           tar -zcvf rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz  *
           
@@ -142,10 +142,10 @@ jobs:
           name: "Kernel ${{ env.kernel_main_version }}"
           
           artifacts: |
-            ${{src_path}}/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-            ${{modules_path}}/${{ env.kernel_main_version }}-modules.tar.gz
-            ${{src_path}}/linux-headers-${{ env.kernel_main_version }}.tar.gz
-            ${{armbian_boot_path}}/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
+            ${{ env.src_path }}/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
+            ${{ env.modules_path }}/${{ env.kernel_main_version }}-modules.tar.gz
+            ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
+            ${{ env.armbian_boot_path }}/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
           body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
           draft: false
           prerelease: false
