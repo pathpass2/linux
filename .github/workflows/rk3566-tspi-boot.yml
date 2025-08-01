@@ -68,7 +68,8 @@ jobs:
 
 
       - name: Build Kernel
-        run: |   
+        run: |
+          echo "src_path=/home/runner/work/linux/linux" >> $GITHUB_ENV
           echo "$(pwd)"
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
@@ -82,8 +83,9 @@ jobs:
           mv boot.img  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
           ls  -l rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img          
           echo "当前所在编译路径：$(pwd)"
+          echo "modules_path=${{src_path}}/modules/lib/modules" >> $GITHUB_ENV
           # 打包模块
-          cd  /home/runner/work/linux/linux/modules/lib/modules
+          cd  ${{modules_path}}
           echo "进入modules路径：$(pwd)"
 
           echo  "查看modules"
@@ -115,21 +117,22 @@ jobs:
       
       - name: Package Armbian Boot
         run: |
-          mkdir -p  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
-          cp -a System.map  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/
-          cp -a .config  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/
-          cp -a /home/runner/work/linux/linux/arch/arm64/boot/Image  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/vmlinuz
-          cp -a /home/runner/work/linux/linux/arch/arm64/boot/dts/rockchip/rk3566-lckfb-tspi.dtb  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/
-          mkinitramfs -o rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/initrd.img   -k  ${{ env.kernel_main_version }} /home/runner/work/linux/linux/modules/lib/modules/${{ env.kernel_main_version }}
-          mkimage -A arm64 -O linux -T ramdisk -C none -a 0 -e 0  -n "uInitrd ${{ env.kernel_main_version }}"  -d  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/initrd.img  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}/uInitrd
+          echo "armbian_boot_path=/home/runner/work/linux/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}" >> $GITHUB_ENV
+          mkdir -p  ${{armbian_boot_path}}
+          cp -a System.map  ${{armbian_boot_path}}/
+          cp -a .config  ${{armbian_boot_path}}/
+          cp -a ${{src_path}}/arch/arm64/boot/Image  ${{armbian_boot_path}}/vmlinuz
+          cp -a ${{src_path}}/arch/arm64/boot/dts/rockchip/rk3566-lckfb-tspi.dtb  ${{armbian_boot_path}}/
+          mkinitramfs -o ${{armbian_boot_path}}/initrd.img   -k  ${{ env.kernel_main_version }} ${{modules_path}}/${{ env.kernel_main_version }}
+          mkimage -A arm64 -O linux -T ramdisk -C none -a 0 -e 0  -n "uInitrd ${{ env.kernel_main_version }}"  -d  ${{armbian_boot_path}}/initrd.img  ${{armbian_boot_path}}/uInitrd
           
           
-          echo  "查看rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}下的文件"
-          ls -l  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
-          cd  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}
+          echo  "查看${{armbian_boot_path}}下的文件"
+          ls -l  ${{armbian_boot_path}}
+          cd  ${{armbian_boot_path}}
           echo "打包rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz"
           tar -zcvf rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz  *
-          mv  rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz  /home/runner/work/linux/linux/
+          
           
           
       - name: Upload Kernel to Release
@@ -139,10 +142,10 @@ jobs:
           name: "Kernel ${{ env.kernel_main_version }}"
           
           artifacts: |
-            /home/runner/work/linux/linux/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
-            /home/runner/work/linux/linux/modules/lib/modules/${{ env.kernel_main_version }}-modules.tar.gz
-            linux-headers-${{ env.kernel_main_version }}.tar.gz
-            /home/runner/work/linux/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
+            ${{src_path}}/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
+            ${{modules_path}}/${{ env.kernel_main_version }}-modules.tar.gz
+            ${{src_path}}/linux-headers-${{ env.kernel_main_version }}.tar.gz
+            ${{armbian_boot_path}}/linux/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
           body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
           draft: false
           prerelease: false
