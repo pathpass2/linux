@@ -78,9 +78,6 @@ jobs:
         run: |
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
-      - name: set armbian-boot-directory
-        run: |
-          echo "armbian_boot_path=${{ env.src_path }}/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}" >> $GITHUB_ENV
 
       - name: Build Kernel
         run: |             
@@ -127,24 +124,7 @@ jobs:
           echo "当前所在路径：$(pwd)"
           echo "查看打包的linux-headers-${{ env.kernel_main_version }}.tar.gz"
           ls  -l ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
-     
-
-      - name: Package Armbian Boot
-        run: |
-          mkdir -p  ${{ env.armbian_boot_path }}
-          cp -a System.map  ${{ env.armbian_boot_path }}/
-          cp -a .config  ${{ env.armbian_boot_path }}/config-${{ env.kernel_main_version }}
-          cp -a ${{ env.src_path }}/arch/arm64/boot/Image  ${{ env.armbian_boot_path }}/vmlinuz
-          cp -a ${{ env.src_path }}/arch/arm64/boot/dts/rockchip/rk3566-lckfb-tspi.dtb  ${{ env.armbian_boot_path }}/
-          mkinitramfs -o ${{ env.armbian_boot_path }}/initrd.img   -k  ${{ env.kernel_main_version }} ${{ env.modules_path }}/${{ env.kernel_main_version }}
-          mkimage -A arm64 -O linux -T ramdisk -C none -a 0 -e 0  -n "uInitrd ${{ env.kernel_main_version }}"  -d  ${{ env.armbian_boot_path }}/initrd.img  ${{ env.armbian_boot_path }}/uInitrd 
-          echo  "查看${{ env.armbian_boot_path }}下的文件"
-          ls -l  ${{ env.armbian_boot_path }}
-          cd  ${{ env.armbian_boot_path }}
-          echo "打包rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz"
-          tar -zcvf rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz  *
-          
-          
+            
           
       - name: Upload Kernel to Release  ${{ github.event.inputs.source_tag }}
         uses: ncipollo/release-action@v1
@@ -156,7 +136,7 @@ jobs:
             ${{ env.src_path }}/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
             ${{ env.modules_path }}/${{ env.kernel_main_version }}-modules.tar.gz
             ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
-            ${{ env.armbian_boot_path }}/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
+            
           body: |
             Auto-built  ${{ github.event.inputs.target_tag }}
             Kernel version: ${{ env.kernel_main_version }}
