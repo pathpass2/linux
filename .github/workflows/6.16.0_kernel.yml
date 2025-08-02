@@ -1,9 +1,13 @@
 name: Build rk3566-tspi.img
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Source tag to build from'
+        required: true
+        default: 'v6.16.0'
+        
 
 env:
   ARCH: arm64
@@ -17,10 +21,12 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Repository
+      - name: Checkout source tag
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          ref: ${{ github.event.inputs.target_tag }}
+          submodules: true
+          fetch-depth: 0
           # 关键：保留文件权限
           persist-credentials: false
 
@@ -140,10 +146,10 @@ jobs:
           
           
           
-      - name: Upload Kernel to Release
+      - name: Upload Kernel to Release  ${{ github.event.inputs.source_tag }}
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ github.ref_name || format('v{0}', env.kernel_main_version) }}
+          tag: ${{ github.event.inputs.target_tag }}
           name: "Kernel ${{ env.kernel_main_version }}"
           
           artifacts: |
@@ -151,6 +157,10 @@ jobs:
             ${{ env.modules_path }}/${{ env.kernel_main_version }}-modules.tar.gz
             ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
             ${{ env.armbian_boot_path }}/rk3566-lckfb-tspi-armbian-boot-${{ env.kernel_main_version }}.tar.gz
-          body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
+          body: |
+            Auto-built  ${{ github.event.inputs.target_tag }}
+            Kernel version: ${{ env.kernel_main_version }}
+            
           draft: false
           prerelease: false
+          allowUpdates: true
