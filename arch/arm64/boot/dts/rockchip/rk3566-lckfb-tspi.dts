@@ -24,7 +24,7 @@
 
 	chosen: chosen {
 		stdout-path = "serial2:115200n8";
-		bootargs = "root=/dev/mmcblk0p3 rootfstype=ext4 rw rootwait console=ttyS2,115200";    //rootfs设置为emmc的第三个分区  波特率115200
+		bootargs = "root=UUID=3d5a63f7-e85b-4637-af14-a6963f0f48d8 rootfstype=ext4 rw rootwait console=ttyS2,115200";    //rootfs设置为emmc的第三个分区  波特率115200
 	};
 
 	reserved-memory {
