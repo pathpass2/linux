@@ -73,6 +73,10 @@ jobs:
           # 获取内核版本号
           echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
 
+      - name: Set armbian_path
+        run: |
+          echo "armbian_path=${{ env.src_path }}/armbian_boot" >> $GITHUB_ENV
+
       - name: Build Kernel
         run: |             
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  olddefconfig
@@ -118,6 +122,24 @@ jobs:
           echo "当前所在路径：$(pwd)"
           echo "查看打包的linux-headers-${{ env.kernel_main_version }}.tar.gz"
           ls  -l ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz          
+
+      - name: Build  armbian_boot
+        run: |
+          mkdir -p ${{ env.armbian_path }}
+          cp -a ${{ env.src_path }}/arch/arm64/boot/Image   ${{ env.armbian_path }}/vmlinuz-${{ env.kernel_main_version }}
+          cp -a ${{ env.src_path }}/arch/arm64/boot/dts/rockchip/rk3566-lckfb-tspi.dtb   ${{ env.armbian_path }}/
+          cp -a ${{ env.src_path }}/System.map   ${{ env.armbian_path }}/System.map-${{ env.kernel_main_version }}
+          cp -a ${{ env.src_path }}/.config      ${{ env.armbian_path }}/config-${{ env.kernel_main_version }}
+          
+          echo  "查看打包的armbian_boot压缩文件$(ls)"
+          cat > ${{ env.armbian_path }}/readme.txt  << EOF
+          dtb需要反编译，去除里面的bootargs启动参数，才能给armbian使用
+          initrd.img和uInitrd需要自己到要刷入的armbian机器里面通过modules制作，我不会在Github-Actions上面编译initrd.img
+          EOF
+          
+          cd   ${{ env.armbian_path }}
+          tar  -zcvf armbian-boot-${{ env.kernel_main_version }}.tar.gz   *          
+
           
       - name: Upload Kernel to Release
         uses: ncipollo/release-action@v1
@@ -129,7 +151,7 @@ jobs:
             ${{ env.src_path }}/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img
             ${{ env.modules_path }}/${{ env.kernel_main_version }}-modules.tar.gz
             ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
-            
+            ${{ env.armbian_path }}/armbian-boot-${{ env.kernel_main_version }}.tar.gz
           body: "Auto-built  rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}"
           draft: false
           prerelease: false
