@@ -33,6 +33,10 @@
 / {
 	qcom,board-id = <40 0>;
 
+        chosen {
+                bootargs = "console=ttyMSM0,115200n8 earlycon=msm_serial_dm,0xa88000,115200n8";
+        };
+
 	vreg_ibb: regulator-ibb {
 		compatible = "regulator-fixed";
 		regulator-name = "ibb";
@@ -592,4 +596,9 @@
 
 &wifi {
 	qcom,ath10k-calibration-variant = "xiaomi_davinci";
+};
+&uart8 {
+    status = "okay";
+    pinctrl-names = "default";
+    pinctrl-0 = <&qup_uart8_default>;
 };
