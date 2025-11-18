@@ -12,7 +12,7 @@
 	 * Xiaomi Mi 9T
 	 * Xiaomi Redmi K20
 	 */
-	model = "Xiaomi Mi 9T (Samsung)";
+	model = "Xiaomi Redmi K20 (Samsung-display)";
 	compatible = "xiaomi,davinci-samsung", "xiaomi,davinci", "qcom,sm7150";
 };
 
