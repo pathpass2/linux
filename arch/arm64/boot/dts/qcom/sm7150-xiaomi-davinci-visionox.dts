@@ -12,7 +12,7 @@
 	 * Xiaomi Mi 9T
 	 * Xiaomi Redmi K20
 	 */
-	model = "Xiaomi Mi 9T (Visionox)";
+	model = "Xiaomi Redmi K20 (Visionox-display)";
 	compatible = "xiaomi,davinci-visionox", "xiaomi,davinci", "qcom,sm7150";
 };
 
