@@ -49,9 +49,11 @@
 
 		framebuffer: framebuffer@9c000000 {
 			compatible = "simple-framebuffer";
-			reg = <0x0 0x9c000000 0x0 (1080 * 2400 * 4)>;
+		//	reg = <0x0 0x9c000000 0x0 (1080 * 2400 * 4)>;
+			reg = <0x0 0x9c000000 0x0 (1080 * 2340 * 4)>;
 			width = <1080>;
-			height = <2400>;
+			height = <2340>;
+		//	height = <2400>;
 			stride = <(1080 * 4)>;
 			format = "a8r8g8b8";
 
@@ -76,7 +78,8 @@
 
 	reserved-memory {
 		cont_splash_mem: splash_region@9c000000 {
-			reg = <0x0 0x9c000000 0x0 (1080 * 2400 * 4)>;
+		//	reg = <0x0 0x9c000000 0x0 (1080 * 2400 * 4)>;
+			reg = <0x0 0x9c000000 0x0 (1080 * 2340 * 4)>;
 			no-map;
 		};
 
