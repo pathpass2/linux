@@ -883,7 +883,7 @@
 };
 
 &venus {
-	//status = "okay";
+	status = "okay";
 };
 
 &wifi {
