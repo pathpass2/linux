@@ -376,14 +376,16 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		/*
+		 * Downstream specifies a range of 1648-3100mV.
+		 * Tighten the range to 3000-3100mV for reliable touchscreen
+		 * initialization.
+		 */
 		vddpx_2:
 		vreg_l6c_3p0: ldo6 {
-			regulator-min-microvolt = <1648000>;
+			regulator-min-microvolt = <3000000>;
 			regulator-max-microvolt = <3100000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-			regulator-allow-set-load;
-			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
-						   RPMH_REGULATOR_MODE_HPM>;
 		};
 
 		vreg_l7c_3p0: ldo7 {
@@ -433,7 +435,8 @@
 };
 
 &camss {
-	vdda-supply = <&vdda_csi0_1p25>;
+	vdda-phy-supply = <&vdda_mipi_csi0_0p9>;
+	vdda-pll-supply = <&vdda_csi0_1p25>;
 	status = "okay";
 };
 
@@ -667,7 +670,7 @@
 };
 
 &sdhc_2 {
-	cd-gpios = <&tlmm 69 GPIO_ACTIVE_HIGH>;
+	cd-gpios = <&tlmm 69 GPIO_ACTIVE_LOW>;
 
 	vmmc-supply = <&vreg_l9c_3p1>;
 	vqmmc-supply = <&vreg_l6c_3p0>;
@@ -869,6 +872,9 @@
 	dr_mode = "otg";
 	usb-role-switch;
 	maximum-speed = "high-speed";
+	/* Remove USB3 phy */
+	phys = <&usb_1_hsphy>;
+	phy-names = "usb2-phy";
 };
 
 &usb_1_dwc3_hs {
