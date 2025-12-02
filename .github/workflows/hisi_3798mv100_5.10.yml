@@ -1,0 +1,153 @@
+name: Build hisi_3798mv100_5.10.bin
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Source tag to build from'
+        required: true
+        default: 'hisi3798-v5.10'
+        
+
+env:
+  ARCH: arm
+  src_path: /home/runner/work/linux/linux
+  modules_path: /home/runner/work/linux/linux/modules/lib/modules
+  
+
+  
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.target_tag }}
+          submodules: true
+          fetch-depth: 0
+          # 关键：保留文件权限
+          persist-credentials: false
+
+      - name: Fix Script Permissions
+        run: |
+          find . -type f -name "*.sh" -exec chmod +x {} \;
+          find . -type f -name "mkimg" -exec chmod +x {} \;
+          find . -type f -name "resource_tool" -exec chmod +x {} \;
+          find . -type f -name "mkbootimg" -exec chmod +x {} \;
+          chmod +x ./scripts/*
+          
+      
+
+      - name: Install Latest LZ4
+        run: |
+          # 从 GitHub 下载最新版 LZ4
+          LZ4_LATEST=$(curl -s https://api.github.com/repos/lz4/lz4/releases/latest | grep 'tarball_url' | cut -d\" -f4)
+          wget $LZ4_LATEST -O lz4-latest.tar.gz
+          tar -xzf lz4-latest.tar.gz
+          cd lz4-lz4-*
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          lz4 --version
+
+          
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            device-tree-compiler \
+            u-boot-tools \
+            libssl-dev \
+            bc \
+            flex \
+            bison \
+            libncurses-dev \
+            initramfs-tools \
+            busybox-static
+          sudo -E apt-get -y install $(curl -fsSL https://tinyurl.com/ubuntu2204-build-armbian)
+
+      - name: Setup ARM Toolchain
+        run: |
+          wget https://publishing-ie-linaro-org.s3.amazonaws.com/releases/components/toolchain/binaries/7.5-2019.12/armeb-linux-gnueabi/gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz?Signature=V4KUsrxRFOMomns3jD6uIoQ4WOI%3D&Expires=1756869366&AWSAccessKeyId=AKIAIELXV2RYNAHFUP7A 
+          wget https://publishing-ie-linaro-org.s3.amazonaws.com/releases/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz?Signature=uMn%2BUDufx1F8LTs6AYVQRth1GcU%3D&Expires=1756869491&AWSAccessKeyId=AKIAIELXV2RYNAHFUP7A
+          tar xf gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabi.tar.xz
+          echo "$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabi/bin" >> $GITHUB_PATH
+
+      - name: Get Kernel Version
+        run: |
+          # 获取内核版本号
+          echo "kernel_main_version=$(make kernelversion)" >> $GITHUB_ENV
+
+
+          
+      - name: Build Kernel
+        run: |
+          mkdir -p  ${{ env.armbian_path }}/
+          mkdir -p  ${{ env.armbian_file_path }}
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  hi3798mv100_defconfig
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu- dtbs Image zImage modules
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=${{ env.src_path }}/modules
+          cat   arch/arm/boot/zImage arch/arm/boot/dts/hi3798mv100.dtb  >> kernel-dtb  
+          mkimage -A arm -O linux -T kernel -C none -a 0x2000000 -e 0x2000000 -n "Linux-5.10" -d kernel-dtb hi_kernel-mv100_${{ env.kernel_main_version }}.bin
+          ls -lh hi_kernel-mv100_${{ env.kernel_main_version }}.bin
+          echo "当前所在编译路径：$(pwd)"
+          # 打包模块
+          cd  ${{ env.modules_path }}
+          echo "进入modules路径：${{ env.modules_path }}"
+
+          echo  "查看modules"
+          ls
+          echo "${{ env.kernel_main_version }}"
+          echo "查看模块详情"
+          ls -lh ${{ env.kernel_main_version }}
+          echo "打包modules"
+          tar -zcf ${{ env.kernel_main_version }}-modules.tar.gz   ${{ env.kernel_main_version }}
+          echo "查看打包的modules.tar.gz"
+          ls  -lh
+
+          
+      
+      - name: Build Kernel-headers
+        run: |
+          # 制作linux-headers头文件
+          mkdir  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}
+          cp -a  Module.symvers      ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a  Makefile           ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a  scripts            ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          mkdir -p                   ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64
+          cp -a arch/arm64/include    ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/include
+          cp -a arch/arm64/kvm          ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/kvm 
+          cp -a arch/arm64/Makefile      ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/arch/arm64/Makefile
+          cp -a include                  ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cp -a .config                 ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
+          cd ${{ env.src_path }}
+          tar -zcf  linux-headers-${{ env.kernel_main_version }}.tar.gz   linux-headers-${{ env.kernel_main_version }}
+          echo "当前所在路径：$(pwd)"
+          echo "查看打包的linux-headers-${{ env.kernel_main_version }}.tar.gz"
+          ls  -lh ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
+
+        
+          
+      - name: Upload Kernel to Release  ${{ github.event.inputs.source_tag }}
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.event.inputs.target_tag }}
+          name: "ap6255 Kernel ${{ env.kernel_main_version }}"
+          
+          artifacts: |
+            ${{ env.src_path }}/hi_kernel-mv100_${{ env.kernel_main_version }}.bin
+            ${{ env.modules_path }}/${{ env.kernel_main_version }}-modules.tar.gz
+            ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz
+          body: |
+            tag：  ${{ github.event.inputs.target_tag }}
+            Kernel version: ${{ env.kernel_main_version }}
+            hi_kernel-mv100_${{ env.kernel_main_version }}.bin    海思3798mv100_${{ env.kernel_main_version }}主线内核，通过hitool工具刷入
+            ${{ env.kernel_main_version }}-modules.tar.gz         驱动所需的模块
+            linux-headers-${{ env.kernel_main_version }}.tar.gz   内核头文件 
+            
+          draft: false
+          prerelease: false
+          allowUpdates: true
+          replaceArtifacts: false

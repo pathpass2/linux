@@ -1,0 +1,304 @@
+name: Build hisi_3798mvxxx_5.10.bin
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: 'Source tag to build from'
+        required: true
+        default: 'hisi3798-v5.10'
+      chip_model:
+        description: 'Chip model to build for'
+        required: true
+        default: 'hi3798mv100'
+        type: choice
+        options:
+          - hi3798mv100
+          - hi3798mv200
+          - hi3798mv300
+          - hi3798mv310
+          - all
+
+env:
+  src_path: /home/runner/work/linux/linux
+  modules_path: /home/runner/work/linux/linux/modules/lib/modules
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.target_tag }}
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set chip model variables
+        run: |
+          echo "CHIP_MODEL=${{ github.event.inputs.chip_model }}" >> $GITHUB_ENV
+          
+          # 定义所有芯片型号的数组
+          if [ "${{ github.event.inputs.chip_model }}" = "all" ]; then
+            echo "CHIP_MODELS=hi3798mv100 hi3798mv200 hi3798mv300 hi3798mv310" >> $GITHUB_ENV
+            echo "BUILD_ALL=true" >> $GITHUB_ENV
+          else
+            echo "CHIP_MODELS=${{ github.event.inputs.chip_model }}" >> $GITHUB_ENV
+            echo "BUILD_ALL=false" >> $GITHUB_ENV
+          fi
+
+      - name: Install Latest LZ4
+        run: |
+          LZ4_LATEST=$(curl -s https://api.github.com/repos/lz4/lz4/releases/latest | grep 'tarball_url' | cut -d\" -f4)
+          wget $LZ4_LATEST -O lz4-latest.tar.gz
+          tar -xzf lz4-latest.tar.gz
+          cd lz4-lz4-*
+          make -j$(nproc)
+          sudo make install
+          sudo ldconfig
+          lz4 --version
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            device-tree-compiler \
+            u-boot-tools \
+            libssl-dev \
+            bc \
+            flex \
+            bison \
+            libncurses-dev \
+            initramfs-tools \
+            busybox-static \
+            libc6-dev-i386 \
+            build-essential \
+            kmod \
+            cpio \
+            python3 \
+            python3-pip \
+            libelf-dev \
+            liblz4-tool
+          sudo -E apt-get -y install $(curl -fsSL https://tinyurl.com/ubuntu2204-build-armbian)
+
+      - name: Setup ARM Toolchains
+        run: |
+          # 下载armeb工具链 (用于mv100)
+          echo "Downloading ARM toolchain for hi3798mv100..."
+          wget https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/armeb-linux-gnueabi/gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz -O gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz
+          
+          if [ ! -f "gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz" ]; then
+            echo "ARM toolchain download failed, trying alternative source..."
+            wget https://snapshots.linaro.org/components/toolchain/binaries/7.5-2019.12/armeb-linux-gnueabi/gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz -O gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz
+          fi
+          
+          tar xf gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz
+          echo "ARM_TOOLCHAIN_PATH=$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi/bin" >> $GITHUB_ENV
+          
+          # 下载aarch64工具链 (用于mv200/mv300/mv310)
+          echo "Downloading AARCH64 toolchain for hi3798mv200/mv300/mv310..."
+          wget https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz -O gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
+          
+          if [ ! -f "gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz" ]; then
+            echo "AARCH64 toolchain download failed, trying alternative source..."
+            wget https://snapshots.linaro.org/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz -O gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
+          fi
+          
+          tar xf gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz
+          echo "AARCH64_TOOLCHAIN_PATH=$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu/bin" >> $GITHUB_ENV
+          
+          # 添加到PATH
+          echo "$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi/bin" >> $GITHUB_PATH
+          echo "$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu/bin" >> $GITHUB_PATH
+
+      - name: Debug Source Structure
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Source structure:"
+          ls -la
+          echo "Arch directories:"
+          ls -la arch/ || echo "No arch directory found"
+          echo "Config files:"
+          find . -name "*defconfig" | head -10 || echo "No defconfig files found"
+          echo "DTB files:"
+          find . -name "*.dts" -o -name "*.dtb" | head -10 || echo "No DTS/DTB files found"
+
+      - name: Get Kernel Version
+        run: |
+          # 首先设置默认架构来获取内核版本
+          make ARCH=arm CROSS_COMPILE=${{ env.ARM_TOOLCHAIN_PATH }}/armeb-linux-gnueabi- kernelversion > kernel_version.txt
+          echo "kernel_main_version=$(cat kernel_version.txt)" >> $GITHUB_ENV
+          echo "Kernel version: ${{ env.kernel_main_version }}"
+
+      - name: Build Kernel for selected models
+        run: |
+          echo "Building for chip models: ${{ env.CHIP_MODELS }}"
+          
+          # 创建构建目录
+          mkdir -p build_output
+          
+          # 遍历所有需要构建的芯片型号
+          for chip in ${{ env.CHIP_MODELS }}; do
+            echo "=========================================="
+            echo "Building for $chip"
+            echo "=========================================="
+            
+            # 设置架构和工具链
+            if [ "$chip" = "hi3798mv100" ]; then
+              ARCH="arm"
+              CROSS_COMPILE="armeb-linux-gnueabi-"
+              TOOLCHAIN_PATH="${{ env.ARM_TOOLCHAIN_PATH }}"
+              DEFCONFIG="hi3798mv100_defconfig"
+              KERNEL_IMAGE="zImage"
+              KERNEL_PATH="arch/arm/boot/zImage"
+              DTB_SEARCH_PATH="arch/arm/boot/dts"
+              echo "Using ARM (32-bit) toolchain for $chip"
+            else
+              ARCH="arm64"
+              CROSS_COMPILE="aarch64-linux-gnu-"
+              TOOLCHAIN_PATH="${{ env.AARCH64_TOOLCHAIN_PATH }}"
+              DEFCONFIG="${chip}_defconfig"
+              KERNEL_IMAGE="Image"
+              KERNEL_PATH="arch/arm64/boot/Image"
+              DTB_SEARCH_PATH="arch/arm64/boot/dts"
+              echo "Using AARCH64 (64-bit) toolchain for $chip"
+            fi
+            
+            # 检查defconfig文件是否存在
+            if [ ! -f "arch/${ARCH}/configs/${DEFCONFIG}" ]; then
+              echo "Warning: Defconfig file ${DEFCONFIG} not found! Skipping $chip"
+              continue
+            fi
+            
+            # 清理之前的构建
+            echo "Cleaning previous build..."
+            make ARCH=${ARCH} CROSS_COMPILE=${TOOLCHAIN_PATH}/${CROSS_COMPILE} clean
+            
+            # 设置配置
+            echo "Setting up defconfig..."
+            make ARCH=${ARCH} CROSS_COMPILE=${TOOLCHAIN_PATH}/${CROSS_COMPILE} ${DEFCONFIG}
+            
+            # 构建内核镜像和DTB
+            echo "Building kernel and DTB..."
+            make ARCH=${ARCH} CROSS_COMPILE=${TOOLCHAIN_PATH}/${CROSS_COMPILE} ${KERNEL_IMAGE} dtbs -j$(nproc)
+            
+            # 构建模块
+            echo "Building modules..."
+            make ARCH=${ARCH} CROSS_COMPILE=${TOOLCHAIN_PATH}/${CROSS_COMPILE} modules -j$(nproc)
+            
+            # 查找对应的DTB文件
+            DTB_PATH=$(find ${DTB_SEARCH_PATH} -name "*${chip}*.dtb" | head -1)
+            if [ -z "$DTB_PATH" ]; then
+              echo "Warning: No DTB file found for ${chip}! Searching in ${DTB_SEARCH_PATH}..."
+              find ${DTB_SEARCH_PATH} -name "*.dtb" | head -5
+              continue
+            fi
+            
+            echo "Using DTB file: ${DTB_PATH}"
+            echo "Using kernel image: ${KERNEL_PATH}"
+            
+            # 检查内核镜像和DTB文件是否存在
+            if [ ! -f "${KERNEL_PATH}" ]; then
+              echo "Error: Kernel image not found at ${KERNEL_PATH}"
+              continue
+            fi
+            
+            if [ ! -f "${DTB_PATH}" ]; then
+              echo "Error: DTB file not found at ${DTB_PATH}"
+              continue
+            fi
+            
+            # 安装模块
+            MODULES_DIR="modules_${chip}"
+            mkdir -p ${MODULES_DIR}
+            make ARCH=${ARCH} CROSS_COMPILE=${TOOLCHAIN_PATH}/${CROSS_COMPILE} modules_install INSTALL_MOD_PATH=${MODULES_DIR}
+            
+            # 处理内核和dtb合并
+            if [ "$ARCH" = "arm" ]; then
+              # ARM32位架构：合并zImage和dtb，然后转换为uImage
+              echo "Processing ARM32 architecture for $chip"
+              cat ${KERNEL_PATH} ${DTB_PATH} > kernel-dtb-${chip}
+              mkimage -A arm -O linux -T kernel -C none -a 0x2000000 -e 0x2000000 -n "Linux-${{ env.kernel_main_version }}-${chip}" -d kernel-dtb-${chip} hi_kernel-${chip}_${{ env.kernel_main_version }}.bin
+            else
+              # ARM64位架构：转换Image为uImage，然后与dtb合并
+              echo "Processing ARM64 architecture for $chip"
+              mkimage -A arm64 -O linux -T kernel -C none -a 0x20080000 -e 0x20080000 -n "Linux-${{ env.kernel_main_version }}-${chip}" -d ${KERNEL_PATH} uImage-${chip}
+              cat uImage-${chip} ${DTB_PATH} > hi_kernel-${chip}_${{ env.kernel_main_version }}.bin
+            fi
+            
+            # 打包模块
+            echo "Packaging modules..."
+            cd ${MODULES_DIR}/lib/modules
+            MODULE_VERSION_DIR=$(ls -d */ | head -1 | sed 's/\///')
+            tar -zcf ${MODULE_VERSION_DIR}-${chip}-modules.tar.gz ${MODULE_VERSION_DIR}
+            cd ../../..
+            
+            # 移动文件到输出目录
+            mv hi_kernel-${chip}_${{ env.kernel_main_version }}.bin build_output/
+            mv ${MODULES_DIR}/lib/modules/${MODULE_VERSION_DIR}-${chip}-modules.tar.gz build_output/
+            
+            # 清理临时文件
+            rm -f kernel-dtb-${chip} uImage-${chip}
+            
+            echo "Completed building for $chip"
+          done
+
+      - name: Build Kernel Headers
+        run: |
+          # 只在有构建输出的情况下构建头文件
+          if [ -n "$(ls -A build_output/*.bin 2>/dev/null)" ]; then
+            echo "Building kernel headers..."
+            mkdir -p linux-headers-${{ env.kernel_main_version }}
+            
+            # 复制必要的文件
+            [ -f "Module.symvers" ] && cp -a Module.symvers linux-headers-${{ env.kernel_main_version }}/
+            [ -f "Makefile" ] && cp -a Makefile linux-headers-${{ env.kernel_main_version }}/
+            [ -d "scripts" ] && cp -a scripts linux-headers-${{ env.kernel_main_version }}/
+            [ -d "include" ] && cp -a include linux-headers-${{ env.kernel_main_version }}/
+            [ -f ".config" ] && cp -a .config linux-headers-${{ env.kernel_main_version }}/
+            
+            # 复制架构相关文件
+            if [ -d "arch/arm64" ]; then
+              mkdir -p linux-headers-${{ env.kernel_main_version }}/arch/arm64
+              [ -d "arch/arm64/include" ] && cp -a arch/arm64/include linux-headers-${{ env.kernel_main_version }}/arch/arm64/
+              [ -f "arch/arm64/Makefile" ] && cp -a arch/arm64/Makefile linux-headers-${{ env.kernel_main_version }}/arch/arm64/
+            fi
+            
+            if [ -d "arch/arm" ]; then
+              mkdir -p linux-headers-${{ env.kernel_main_version }}/arch/arm
+              [ -d "arch/arm/include" ] && cp -a arch/arm/include linux-headers-${{ env.kernel_main_version }}/arch/arm/
+              [ -f "arch/arm/Makefile" ] && cp -a arch/arm/Makefile linux-headers-${{ env.kernel_main_version }}/arch/arm/
+            fi
+            
+            tar -zcf build_output/linux-headers-${{ env.kernel_main_version }}.tar.gz linux-headers-${{ env.kernel_main_version }}
+          else
+            echo "No kernel binaries built, skipping headers build"
+          fi
+
+      - name: Show Build Results
+        run: |
+          echo "Build completed. Output files:"
+          ls -la build_output/ || echo "No build output found"
+          echo "File sizes:"
+          du -sh build_output/* 2>/dev/null || true
+
+      - name: Upload to Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.event.inputs.target_tag }}
+          name: "Kernel ${{ env.kernel_main_version }} for ${{ env.CHIP_MODEL }}"
+          artifacts: "build_output/*"
+          body: |
+            Tag: ${{ github.event.inputs.target_tag }}
+            Kernel version: ${{ env.kernel_main_version }}
+            Chip models: ${{ env.CHIP_MODELS }}
+            
+            Files included:
+            - hi_kernel-*.bin: HiSilicon 3798 kernel images for different chip models
+            - *-modules.tar.gz: Kernel modules for each chip model
+            - linux-headers-*.tar.gz: Kernel headers
+          draft: false
+          prerelease: false
+          allowUpdates: true
+          replaceArtifacts: true

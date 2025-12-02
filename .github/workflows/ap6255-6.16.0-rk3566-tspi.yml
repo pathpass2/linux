@@ -6,7 +6,7 @@ on:
       target_tag:
         description: 'Source tag to build from'
         required: true
-        default: 'v6.16.0'
+        default: 'tspi_ap6255_v6.16.0'
         
 
 env:
@@ -91,7 +91,7 @@ jobs:
           mkdir -p  ${{ env.armbian_path }}/
           mkdir -p  ${{ env.armbian_file_path }}
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  tspi_defconfig
-          make ARCH=$ARCH CROSS_COMPILE=${{env.corss_compile}} dtbs
+          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu- dtbs
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  rk3566-lckfb-tspi.img  -j$(nproc)
           make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=${{ env.src_path }}/modules
           echo "${{ env.kernel_main_version }}"
@@ -114,7 +114,11 @@ jobs:
           tar -zcf ${{ env.kernel_main_version }}-modules.tar.gz   ${{ env.kernel_main_version }}
           echo "查看打包的modules.tar.gz"
           ls  -lh
-           
+
+      - name: tar ap6255_wifi_firmware
+        run: |
+          cd ${{ env.src_path }}/firmware
+          tar -zcf ap6255_wifi_firmware.tar.gz  *           
       
       - name: Build Kernel-headers
         run: |
@@ -143,6 +147,7 @@ jobs:
           mv ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}.tar.gz  .
           mv ${{ env.modules_path }}/${{ env.kernel_main_version }}-modules.tar.gz   .
           mv ${{ env.src_path }}/rk3566-lckfb-tspi-boot-${{ env.kernel_main_version }}.img  .
+          cp -a ${{ env.src_path }}/firmware/ap6255_wifi_firmware.tar.gz  .
           tar -zcvf rk3566-tspi-${{ env.kernel_main_version }}.tar.gz   *
 
       #制作armbian_boot所需的modules、headers、boot-files、dtb
@@ -155,8 +160,8 @@ jobs:
       - name: create armbian_headers
         run: |
           cd ${{ env.src_path }}/linux-headers-${{ env.kernel_main_version }}/
-          tar -zcf  headers-${{ env.kernel_main_version }}.tar.gz   *
-          mv   headers-${{ env.kernel_main_version }}.tar.gz  ${{ env.armbian_path }}/
+          tar -zcf  ${{ env.armbian_path }}/headers-${{ env.kernel_main_version }}.tar.gz   .
+          #mv   headers-${{ env.kernel_main_version }}.tar.gz  ${{ env.armbian_path }}/
 
           
       - name: edit armbian_dtb
@@ -296,6 +301,7 @@ jobs:
       - name: Build  ap6255_armbian-6.16.0-boot
         run: |
           cd ${{ env.armbian_path }}/
+          mv ${{ env.src_path }}/firmware/ap6255_wifi_firmware.tar.gz  .
           mv ${{ env.armbian_file_path }}/boot-${{ env.kernel_main_version }}.tar.gz   .
           echo "查看armbian_boot下所有需要打包的文件"
           ls -lh
@@ -318,7 +324,7 @@ jobs:
             rk3566-lckfb-tspi-ap6255
             rk3566-tspi-${{ env.kernel_main_version }}.tar.gz     里面包含boot.img、modules、headers、解压缩后，通过瑞芯微刷机工具刷入boot.img
             armbian_boot-${{ env.kernel_main_version }}.tar.gz    用于更新armbian内核的压缩包，解压缩后自行替换压缩包里面的文件到相应路径 
-            
+            armbian自带的brcm固件泰山派使用起来有点问题，ap6255_wifi_firmware.tar.gz里面是从原厂固件提取的ap6255-WiFi驱动用到的固件，放到armbian的/lib/firmware/brcm/路径下
             
           draft: false
           prerelease: false
