@@ -554,6 +554,7 @@ deps_config := \
 	drivers/input/joystick/iforce/Kconfig \
 	drivers/input/tablet/Kconfig \
 	drivers/input/touchscreen/Kconfig \
+	drivers/input/touchscreen/fts521/Kconfig \
 	drivers/input/misc/Kconfig \
 	drivers/input/rmi4/Kconfig \
 	drivers/input/serio/Kconfig \
@@ -1678,7 +1679,7 @@ ifneq "$(ARCH)" "arm64"
 $(autoconfig): FORCE
 endif
 
-ifneq "$(KERNELVERSION)" "6.18.0-rc1"
+ifneq "$(KERNELVERSION)" "6.18.0"
 $(autoconfig): FORCE
 endif
 
