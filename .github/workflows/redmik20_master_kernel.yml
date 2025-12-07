@@ -316,7 +316,7 @@ jobs:
             - linux-headers-${{ env.kernel_main_version }}.tar.gz: 内核头文件
             
             注意: boot.img 默认指定 rootfs 的 UUID 为 3d5a63f7-e85b-4637-af14-a6963f0f48d8
-            可以挂载 boot.img 后修改 pmos.conf 来指定新的 rootfs UUID，或者创建一个 UUID 为 3d5a63f7-e85b-4637-af14-a6963f0f48d8 的 rootfs
+            可以挂载 boot.img 后修改 pmos.conf 来指定新的 rootfs UUID，或者创建一个 UUID 为 3d5a63f7-e85b-4637-af14-a6963f0f48d8 的 rootfs   默认使用的dtb是维信诺的屏幕，如果手机>是三星屏幕，可挂载boot.img后，修改pmos.conf文件，指定三星屏幕的dtb
 
           draft: false
           prerelease: false
