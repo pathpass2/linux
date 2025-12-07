@@ -60,7 +60,6 @@ jobs:
             libncurses-dev \
             initramfs-tools \
             busybox-static \
-            # 添加一些必要的依赖
             make \
             gcc \
             libc6-dev \
