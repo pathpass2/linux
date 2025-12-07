@@ -15,12 +15,13 @@
 	compatible = "lckfb,tspi-rk3566", "rockchip,rk3566";
 
 	aliases {
-		mmc0 = &sdmmc0;
-		mmc1 = &sdhci;
+		mmc0 = &sdhci;		//emmc设置为mmc0 (mmcblk0)
+		mmc1 = &sdmmc0;		//sd设置为mmc1 (mmcblk1)
 		mmc2 = &sdmmc1;
 	};
 
 	chosen: chosen {
+		bootargs = "root=/dev/mmcblk0p3 rootfstype=ext4 rw rootwait console=ttyS2,115200";	//从emmc的第三个分区启动，串口波特率115200
 		stdout-path = "serial2:1500000n8";
 	};
 
@@ -588,8 +589,9 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdmmc0_bus4 &sdmmc0_clk &sdmmc0_cmd &sdmmc0_det>;
 	sd-uhs-sdr104;
+	supports-sd;
 	vmmc-supply = <&vcc3v3_sd>;
-	vqmmc-supply = <&vcc_1v8>;
+	vqmmc-supply = <&vccio_sd>;
 	status = "okay";
 };
 
@@ -612,7 +614,8 @@
 	status = "okay";
 
 	brcmf: wifi@1 {
-		compatible = "brcm,bcm4329-fmac";
+		//compatible = "brcm,bcm4329-fmac";	// ap6212
+		compatible = "brcm,bcm4345-fmac";	//ap6255
 		reg = <1>;
 		interrupt-parent = <&gpio2>;
 		interrupts = <RK_PB2 IRQ_TYPE_LEVEL_HIGH>;
@@ -635,7 +638,8 @@
 	status = "okay";
 
 	bluetooth: bluetooth {
-		compatible = "brcm,bcm43438-bt";
+		//compatible = "brcm,bcm43438-bt";		//ap6212
+		compatible = "brcm,bcm4345c5";
 		clocks = <&rk809 1>;
 		clock-names = "lpo";
 		max-speed = <3000000>;
