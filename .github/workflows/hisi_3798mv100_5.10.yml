@@ -70,10 +70,10 @@ jobs:
 
       - name: Setup ARM Toolchain
         run: |
-          wget https://publishing-ie-linaro-org.s3.amazonaws.com/releases/components/toolchain/binaries/7.5-2019.12/armeb-linux-gnueabi/gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz?Signature=V4KUsrxRFOMomns3jD6uIoQ4WOI%3D&Expires=1756869366&AWSAccessKeyId=AKIAIELXV2RYNAHFUP7A 
-          wget https://publishing-ie-linaro-org.s3.amazonaws.com/releases/components/toolchain/binaries/7.5-2019.12/aarch64-linux-gnu/gcc-linaro-7.5.0-2019.12-x86_64_aarch64-linux-gnu.tar.xz?Signature=uMn%2BUDufx1F8LTs6AYVQRth1GcU%3D&Expires=1756869491&AWSAccessKeyId=AKIAIELXV2RYNAHFUP7A
-          tar xf gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabi.tar.xz
-          echo "$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabi/bin" >> $GITHUB_PATH
+          wget https://releases.linaro.org/components/toolchain/binaries/7.5-2019.12/armeb-linux-gnueabi/gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz
+          mv gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz* gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz
+          tar xf gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi.tar.xz
+          echo "$(pwd)/gcc-linaro-7.5.0-2019.12-x86_64_armeb-linux-gnueabi/bin" >> $GITHUB_PATH
 
       - name: Get Kernel Version
         run: |
@@ -86,9 +86,9 @@ jobs:
         run: |
           mkdir -p  ${{ env.armbian_path }}/
           mkdir -p  ${{ env.armbian_file_path }}
-          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  hi3798mv100_defconfig
-          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu- dtbs Image zImage modules
-          make ARCH=$ARCH CROSS_COMPILE=aarch64-none-linux-gnu-  modules_install  INSTALL_MOD_PATH=${{ env.src_path }}/modules
+          make ARCH=$ARCH CROSS_COMPILE=armeb-linux-gnueabi- hi3798mv100_defconfig
+          make ARCH=$ARCH CROSS_COMPILE=armeb-linux-gnueabi- dtbs Image zImage modules
+          make ARCH=$ARCH CROSS_COMPILE=armeb-linux-gnueabi- modules_install INSTALL_MOD_PATH=${{ env.src_path }}/modules
           cat   arch/arm/boot/zImage arch/arm/boot/dts/hi3798mv100.dtb  >> kernel-dtb  
           mkimage -A arm -O linux -T kernel -C none -a 0x2000000 -e 0x2000000 -n "Linux-5.10" -d kernel-dtb hi_kernel-mv100_${{ env.kernel_main_version }}.bin
           ls -lh hi_kernel-mv100_${{ env.kernel_main_version }}.bin
