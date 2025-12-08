@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: GPL-2.0
+/dts-v1/;
+#include "sdm845-xiaomi-beryllium-common.dtsi"
+/ {
+	model = "Xiaomi Mi 8 (ea8074)";
+	compatible = "xiaomi,dipper-ea8074", "qcom,sdm845";
+};
+&display_panel {
+	compatible = "samsung,ea8074";
+	status = "okay";
+};
+&i2c14 {
+	status = "okay";
+	touchscreen@49 {
+		compatible = "focaltech,ft8719";
+		reg = <0x49>;
+		interrupts-extended = <&tlmm 31 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 32 GPIO_ACTIVE_LOW>;
+		iovcc-supply = <&vreg_l14a_1p8>;
+		pinctrl-0 = <&ts_int_default &ts_reset_default>;
+		pinctrl-1 = <&ts_int_sleep &ts_reset_sleep>;
+		pinctrl-names = "default", "sleep";
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2248>;
+	};
+};
