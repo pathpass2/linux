@@ -322,3 +322,4 @@ module_mipi_dsi_driver(ss_notch_fhd_ea8074_driver);
 
 MODULE_AUTHOR("Eralp Çelebi <eralp.celebi.personal@gmail.com>");
 MODULE_DESCRIPTION("DRM driver for the Samsung EA8074 Panel");
+
