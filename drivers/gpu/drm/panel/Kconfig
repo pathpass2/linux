@@ -775,6 +775,18 @@ config DRM_PANEL_SAMSUNG_DB7430
 	  DB7430 DPI display controller used in such devices as the
 	  LMS397KF04 480x800 DPI panel.
 
+config DRM_PANEL_SAMSUNG_EA8074
+	tristate "Samsung EA8074-based DPI panel driver"
+	depends on OF && SPI && GPIOLIB
+	depends on BACKLIGHT_CLASS_DEVICE
+	select DRM_MIPI_DBI
+	help
+	  Say Y here if you want to enable support for the Samsung
+	  EA8074 panel. Mainly found on Xiaomi Mi 8(dipper) and the
+	  Xiaomi Mi 8 Pro(equuleus) mobile devices.
+	  
+	  The panel is 2248x1080@60Hz
+
 config DRM_PANEL_SAMSUNG_LD9040
 	tristate "Samsung LD9040 RGB/SPI panel"
 	depends on OF && SPI
@@ -826,18 +838,6 @@ config DRM_PANEL_SAMSUNG_S6E3FC2X01
 	  Currently supported panels:
 
 	    Samsung AMS641RW (found in the OnePlus 6T smartphone)
-
-config DRM_PANEL_SAMSUNG_EA8074
-	tristate "Samsung EA8074-based DPI panel driver"
-	depends on OF && SPI && GPIOLIB
-	depends on BACKLIGHT_CLASS_DEVICE
-	select DRM_MIPI_DBI
-	help
-	  Say Y here if you want to enable support for the Samsung
-	  EA8074 panel. Mainly found on Xiaomi Mi 8(dipper) and the
-	  Xiaomi Mi 8 Pro(equuleus) mobile devices.
-	  
-	  The panel is 2248x1080@60Hz
 
 config DRM_PANEL_SAMSUNG_S6E3HA2
 	tristate "Samsung S6E3HA2 DSI video mode panel"
