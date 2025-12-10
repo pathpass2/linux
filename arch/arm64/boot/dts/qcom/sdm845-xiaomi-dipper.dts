@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
-#include "sdm845-xiaomi-beryllium-common.dtsi"
+#include "sdm845-xiaomi-dipper-common.dtsi"
 / {
-	model = "Xiaomi Mi 8 (ea8074)";
+	model = "Xiaomi Mi 8 (Samsung-ea8074-display)";
 	compatible = "xiaomi,dipper-ea8074", "qcom,sdm845";
 };
 &display_panel {
