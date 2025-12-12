@@ -7225,6 +7225,7 @@ DEVICE-MAPPER  (LVM)
 M:	Alasdair Kergon <agk@redhat.com>
 M:	Mike Snitzer <snitzer@kernel.org>
 M:	Mikulas Patocka <mpatocka@redhat.com>
+M:	Benjamin Marzinski <bmarzins@redhat.com>
 L:	dm-devel@lists.linux.dev
 S:	Maintained
 Q:	http://patchwork.kernel.org/project/dm-devel/list/
@@ -26455,6 +26456,7 @@ F:	include/trace/
 F:	kernel/trace/
 F:	kernel/tracepoint.c
 F:	scripts/tracing/
+F:	scripts/tracepoint-update.c
 F:	tools/testing/selftests/ftrace/
 
 TRACING MMIO ACCESSES (MMIOTRACE)
