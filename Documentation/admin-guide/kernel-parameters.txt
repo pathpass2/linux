@@ -1372,6 +1372,13 @@ Kernel parameters
 			For details see:
 			Documentation/admin-guide/hw-vuln/reg-file-data-sampling.rst
 
+	dm_verity.keyring_unsealed=
+			[KNL] When set to 1, leave the dm-verity keyring
+			unsealed after initialization so userspace can
+			provision keys. Once the keyring is restricted
+			it becomes active and is searched during signature
+			verification.
+
 	driver_async_probe=  [KNL]
 			List of driver names to be probed asynchronously. *
 			matches with all driver names. If * is specified, the
@@ -2680,6 +2687,15 @@ Kernel parameters
 			1 - Bypass the IOMMU for DMA.
 			unset - Use value of CONFIG_IOMMU_DEFAULT_PASSTHROUGH.
 
+	iommu.debug_pagealloc=
+			[KNL,EARLY] When CONFIG_IOMMU_DEBUG_PAGEALLOC is set, this
+			parameter enables the feature at boot time. By default, it
+			is disabled and the system behaves the same way as a kernel
+			built without CONFIG_IOMMU_DEBUG_PAGEALLOC.
+			Format: { "0" | "1" }
+			0 - Sanitizer disabled.
+			1 - Sanitizer enabled, expect runtime overhead.
+
 	io7=		[HW] IO7 for Marvel-based Alpha systems
 			See comment before marvel_specify_io7 in
 			arch/alpha/kernel/core_marvel.c.
@@ -3451,6 +3467,11 @@ Kernel parameters
 
 			* [no]logdir: Enable or disable access to the general
 			  purpose log directory.
+
+			* max_sec=<sectors>: Set the transfer size limit, in
+			  number of 512-byte sectors, to the value specified in
+			  <sectors>. The value specified in <sectors> has to be
+			  a non-zero positive integer.
 
 			* max_sec_128: Set transfer size limit to 128 sectors.
 
@@ -4798,6 +4819,21 @@ Kernel parameters
 
 	panic_on_warn=1	panic() instead of WARN().  Useful to cause kdump
 			on a WARN().
+
+	panic_force_cpu=
+			[KNL,SMP] Force panic handling to execute on a specific CPU.
+			Format: <cpu number>
+			Some platforms require panic handling to occur on a
+			specific CPU for the crash kernel to function correctly.
+			This can be due to firmware limitations, interrupt routing
+			constraints, or platform-specific requirements where only
+			a particular CPU can safely enter the crash kernel.
+			When set, panic() will redirect execution to the specified
+			CPU before proceeding with the normal panic and kexec flow.
+			If the target CPU is offline or unavailable, panic proceeds
+			on the current CPU.
+			This option should only be used for systems with the above
+			constraints as it might cause the panic operation to be less reliable.
 
 	panic_print=	Bitmask for printing system info when panic happens.
 			User can chose combination of the following bits:
@@ -6605,6 +6641,14 @@ Kernel parameters
 			replacement properties are not found. See the Kconfig
 			entry for RISCV_ISA_FALLBACK.
 
+	riscv_nousercfi=
+		all	Disable user CFI ABI to userspace even if cpu extension
+			are available.
+		bcfi	Disable user backward CFI ABI to userspace even if
+			the shadow stack extension is available.
+		fcfi	Disable user forward CFI ABI to userspace even if the
+			landing pad extension is available.
+
 	ro		[KNL] Mount root device read-only on boot
 
 	rodata=		[KNL,EARLY]
@@ -6973,12 +7017,12 @@ Kernel parameters
 
 	softlockup_panic=
 			[KNL] Should the soft-lockup detector generate panics.
-			Format: 0 | 1
+			Format: <int>
 
-			A value of 1 instructs the soft-lockup detector
-			to panic the machine when a soft-lockup occurs. It is
-			also controlled by the kernel.softlockup_panic sysctl
-			and CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC, which is the
+			A value of non-zero instructs the soft-lockup detector
+			to panic the machine when a soft-lockup duration exceeds
+			N thresholds. It is also controlled by the kernel.softlockup_panic
+			sysctl and CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC, which is the
 			respective build-time switch to that functionality.
 
 	softlockup_all_cpu_backtrace=
