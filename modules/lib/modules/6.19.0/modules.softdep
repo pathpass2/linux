@@ -1,0 +1,21 @@
+# Soft dependencies extracted from modules themselves.
+softdep cifs gcm
+softdep cifs ccm
+softdep cifs aead2
+softdep cifs cmac
+softdep cifs aes
+softdep cifs nls
+softdep cifs ecb
+softdep ksmbd pre: gcm
+softdep ksmbd pre: ccm
+softdep ksmbd pre: aead2
+softdep ksmbd pre: cmac
+softdep ksmbd pre: aes
+softdep ksmbd pre: nls
+softdep ksmbd pre: ecb
+softdep lrw pre: ecb
+softdep ufshcd_core pre: governor_simpleondemand
+softdep act_mpls post: mpls_gso
+softdep xt_LOG pre: nf_log_syslog
+softdep xt_NFLOG pre: nfnetlink_log
+softdep mpls_iptunnel post: mpls_gso
